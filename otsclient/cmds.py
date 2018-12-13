@@ -211,7 +211,7 @@ def stamp_command(args):
 def is_timestamp_complete(stamp, args):
     """Determine if timestamp is complete and can be verified"""
     for msg, attestation in stamp.all_attestations():
-        if attestation.__class__ == BitcoinBlockHeaderAttestation:
+        if attestation.__class__ == BitcoinBlockHeaderAttestation or attestation.__class__ == BitcoinTestnetBlockHeaderAttestation:
             # FIXME: we should actually check this attestation, rather than
             # assuming it's valid
             return True
@@ -388,7 +388,7 @@ def verify_timestamp(timestamp, args):
 
     def attestation_key(item):
         (msg, attestation) = item
-        if attestation.__class__ == BitcoinBlockHeaderAttestation:
+        if attestation.__class__ == BitcoinBlockHeaderAttestation or attestation.__class__ == BitcoinTestnetBlockHeaderAttestation:
             return attestation.height
         else:
             return 2**32-1
@@ -429,6 +429,44 @@ def verify_timestamp(timestamp, args):
                 continue
 
             logging.info("Success! Bitcoin block %d attests existence as of %s" %
+                            (attestation.height,
+                             time.strftime('%Y-%m-%d %Z',
+                                          time.localtime(attested_time))))
+            good = True
+
+            # One Bitcoin attestation is enough
+            break
+
+        elif attestation.__class__ == BitcoinTestnetBlockHeaderAttestation:
+            if not args.use_bitcoin:
+                logging.warning("Not checking BitcoinTestnet attestation; Bitcoin disabled")
+                logging.info("To verify manually, check that BitcoinTestnet block %d has merkleroot %s" %
+                                (attestation.height, b2lx(msg)))
+                continue
+
+            proxy = args.setup_bitcoin()
+
+            try:
+                block_count = proxy.getblockcount()
+                blockhash = proxy.getblockhash(attestation.height)
+            except IndexError:
+                logging.error("BitcoinTestnet block height %d not found; %d is highest known block" % (attestation.height, block_count))
+                continue
+            except ConnectionError as exp:
+                logging.error("Could not connect to local Bitcoin node: %s" % exp)
+                continue
+
+            block_header = proxy.getblockheader(blockhash)
+
+            logging.debug("Attestation block hash: %s" % b2lx(blockhash))
+
+            try:
+                attested_time = attestation.verify_against_blockheader(msg, block_header)
+            except VerificationError as err:
+                logging.error("BitcoinTestnet verification failed: %s" % str(err))
+                continue
+
+            logging.info("Success! BitcoinTestnet block %d attests existence as of %s" %
                             (attestation.height,
                              time.strftime('%Y-%m-%d %Z',
                                           time.localtime(attested_time))))
@@ -512,7 +550,7 @@ def verify_all_attestations(timestamp, attestations_to_verify, args):
     for msg, attestation in timestamp.all_attestations():
         if attestation.__class__ in attestations_to_verify:
             # as of now, only bitcoin attestations can be verified
-            if attestation.__class__ == BitcoinBlockHeaderAttestation:
+            if attestation.__class__ == BitcoinBlockHeaderAttestation or attestation.__class__ == BitcoinTestnetBlockHeaderAttestation:
                 if not args.use_bitcoin:
                     logging.error("Bitcoin disabled, could not check attestations")
                     sys.exit(1)
@@ -630,6 +668,7 @@ def prune_timestamp(timestamp, attestations_to_verify, attestations_to_discard, 
     discard_attestations(timestamp, attestations_to_discard)
     # discard suboptimal attestations for each comparable attestation class
     discard_suboptimal(timestamp, BitcoinBlockHeaderAttestation)
+    discard_suboptimal(timestamp, BitcoinTestnetBlockHeaderAttestation)
     discard_suboptimal(timestamp, LitecoinBlockHeaderAttestation)
     prunable, changed = prune_tree(timestamp)
     return prunable, changed
